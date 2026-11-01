@@ -43,76 +43,89 @@ module.exports = async (req, res) => {
       request.end();
     });
 
+    const operatingList = homeData?.data?.operatingList || [];
     const banners = [];
     const shelves = [];
     const seenIds = new Set();
 
-    // 1. Process Banners
-    if (homeData.data && Array.isArray(homeData.data.banners)) {
-      for (const b of homeData.data.banners) {
-        if (!b) continue;
-        const rawTitle = b.title || '';
-        const isSeries = b.subjectType === 2;
-        const clean = cleanShowTitle(rawTitle);
+    for (const op of operatingList) {
+      if (!op) continue;
+      const opType = op.type || '';
+      const rawTitle = op.title || op.name || '';
 
-        const bannerItem = {
-          id: String(b.subjectId || b.id || Math.random()),
-          subjectId: String(b.subjectId || ''),
-          title: clean || rawTitle,
-          titleAr: clean || rawTitle,
-          poster: b.cover?.url || b.poster || '',
-          backdrop: b.stills?.url || b.backdrop || b.cover?.url || '',
-          rating: parseFloat(b.imdbRatingValue || '8.5') || 8.5,
-          releaseYear: b.releaseDate ? b.releaseDate.substring(0, 4) : '2026',
-          genre: b.genre || (isSeries ? 'مسلسلات' : 'أفلام'),
-          isSeries: isSeries,
-          isPornographic: b.isPornographic || false,
-          detailPath: b.detailPath || ''
-        };
-
-        if (!isAdultOrInappropriate(bannerItem)) {
-          banners.push(bannerItem);
-          seenIds.add(bannerItem.subjectId);
-        }
+      // Skip undesirable shelves
+      if (rawTitle.includes("Boys' Love") || rawTitle.includes("Hot Short")) {
+        continue;
       }
-    }
 
-    // 2. Process Shelves
-    if (homeData.data && Array.isArray(homeData.data.operatingList)) {
-      for (const op of homeData.data.operatingList) {
-        if (!op || !Array.isArray(op.items) || op.items.length === 0) continue;
+      // 1. Process Banner Carousel items
+      if (opType === 'BANNER' && op.banner && Array.isArray(op.banner.items)) {
+        for (const bItem of op.banner.items) {
+          const sub = bItem?.subject;
+          if (!sub) continue;
 
-        const shelfTitle = mapShelfTitle(op.title || op.name || 'أعمال مميزة');
-        const shelfItems = [];
+          if (isAdultOrInappropriate(sub)) continue;
 
-        for (const it of op.items) {
-          if (!it) continue;
-          const isSeries = it.subjectType === 2;
-          const clean = cleanShowTitle(it.title || '');
+          const rawSubTitle = sub.title || '';
+          const isSeries = sub.subjectType === 2;
+          const clean = cleanShowTitle(rawSubTitle);
+          const landscapeUrl = bItem.image?.url || sub.stills?.url || sub.cover?.url || '';
 
-          const item = {
-            id: String(it.subjectId || it.id || Math.random()),
-            subjectId: String(it.subjectId || ''),
-            title: clean || it.title || '',
-            titleAr: clean || it.title || '',
-            poster: it.cover?.url || it.poster || '',
-            backdrop: it.stills?.url || it.backdrop || it.cover?.url || '',
-            rating: parseFloat(it.imdbRatingValue || '8.0') || 8.0,
-            releaseYear: it.releaseDate ? it.releaseDate.substring(0, 4) : '2026',
-            genre: it.genre || (isSeries ? 'مسلسلات' : 'أفلام'),
+          const bannerItem = {
+            id: String(sub.subjectId || Math.random()),
+            subjectId: String(sub.subjectId || ''),
+            title: clean || rawSubTitle,
+            titleAr: clean || rawSubTitle,
+            poster: sub.cover?.url || '',
+            backdrop: landscapeUrl,
+            rating: parseFloat(sub.imdbRatingValue || '8.5') || 8.5,
+            releaseYear: sub.releaseDate ? sub.releaseDate.substring(0, 4) : '2026',
+            genre: sub.genre || (isSeries ? 'مسلسلات' : 'أفلام'),
             isSeries: isSeries,
-            isPornographic: it.isPornographic || false,
-            detailPath: it.detailPath || ''
+            detailPath: sub.detailPath || ''
           };
 
-          if (!isAdultOrInappropriate(item)) {
-            shelfItems.push(item);
+          if (!seenIds.has(bannerItem.subjectId)) {
+            seenIds.add(bannerItem.subjectId);
+            banners.push(bannerItem);
           }
+        }
+      }
+
+      // 2. Process Shelves
+      if (Array.isArray(op.subjects) && op.subjects.length > 0) {
+        const shelfTitle = mapShelfTitle(rawTitle);
+        const shelfItems = [];
+
+        for (const sub of op.subjects) {
+          if (!sub) continue;
+          if (isAdultOrInappropriate(sub)) continue;
+
+          const rawSubTitle = sub.title || '';
+          const isSeries = sub.subjectType === 2;
+          const clean = cleanShowTitle(rawSubTitle);
+
+          const item = {
+            id: String(sub.subjectId || Math.random()),
+            subjectId: String(sub.subjectId || ''),
+            title: clean || rawSubTitle,
+            titleAr: clean || rawSubTitle,
+            poster: sub.cover?.url || '',
+            backdrop: sub.stills?.url || sub.cover?.url || '',
+            rating: parseFloat(sub.imdbRatingValue || '8.0') || 8.0,
+            releaseYear: sub.releaseDate ? sub.releaseDate.substring(0, 4) : '2026',
+            genre: sub.genre || (isSeries ? 'مسلسلات' : 'أفلام'),
+            isSeries: isSeries,
+            detailPath: sub.detailPath || ''
+          };
+
+          shelfItems.push(item);
         }
 
         if (shelfItems.length > 0) {
           shelves.push({
             id: String(op.id || Math.random()),
+            type: opType,
             title: shelfTitle,
             items: shelfItems
           });
@@ -120,14 +133,14 @@ module.exports = async (req, res) => {
       }
     }
 
-    // Edge cache on Vercel: 10 minutes cache, serve stale for 1 hour
     res.setHeader('Cache-Control', 's-maxage=600, stale-while-revalidate=3600');
 
     res.status(200).json({
       success: true,
-      banners,
-      shelves,
-      count: shelves.reduce((acc, s) => acc + s.items.length, 0)
+      bannersCount: banners.length,
+      shelvesCount: shelves.length,
+      banners: banners,
+      shelves: shelves
     });
 
   } catch (error) {
