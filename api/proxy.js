@@ -1,5 +1,6 @@
 const https = require('https');
 const http = require('http');
+const http2 = require('http2');
 
 module.exports = async (req, res) => {
   // Full CORS Headers for cross-origin web playback
@@ -22,27 +23,23 @@ module.exports = async (req, res) => {
 
   try {
     const parsedTarget = new URL(targetUrl);
-    const client = parsedTarget.protocol === 'https:' ? https : http;
 
-    const headers = {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 MovieBoxWindows/1.0.5',
-      'Referer': req.query.ref ? decodeURIComponent(req.query.ref) : 'https://movieboxph.org/movies/watch',
-      'Accept': '*/*'
-    };
-
-    // Forward Range header from browser video element (for seeking & chunking)
-    if (req.headers.range && !isVtt) {
-      headers['Range'] = req.headers.range;
-    }
-
-    const proxyReq = client.get(targetUrl, { headers }, (upstream) => {
-      // If subtitle conversion
-      if (isVtt && (upstream.headers['content-type']?.includes('subrip') || targetUrl.includes('.srt'))) {
+    // -------------------------------------------------------------
+    // 1. Subtitle Fetching & Automatic WebVTT Conversion
+    // -------------------------------------------------------------
+    if (isVtt) {
+      const client = parsedTarget.protocol === 'https:' ? https : http;
+      const subReq = client.get(targetUrl, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          'Referer': 'https://movieboxph.org/',
+          'Accept': '*/*'
+        }
+      }, (upstream) => {
         let rawBody = '';
         upstream.setEncoding('utf-8');
         upstream.on('data', chunk => rawBody += chunk);
         upstream.on('end', () => {
-          // Convert SRT to WebVTT
           let vtt = 'WEBVTT\n\n' + rawBody
             .replace(/\r\n/g, '\n')
             .replace(/(\d{2}:\d{2}:\d{2}),(\d{3})/g, '$1.$2');
@@ -54,57 +51,91 @@ module.exports = async (req, res) => {
           });
           res.end(vtt);
         });
-        return;
-      }
+      });
+      subReq.on('error', (err) => {
+        if (!res.headersSent) res.status(500).send('Subtitle error: ' + err.message);
+      });
+      return;
+    }
 
-      // If upstream failed, return diagnostic info
-      if (upstream.statusCode !== 200 && upstream.statusCode !== 206) {
-        let errBody = '';
-        upstream.on('data', d => errBody += d);
-        upstream.on('end', () => {
-          res.writeHead(upstream.statusCode, {
-            'Access-Control-Allow-Origin': '*',
-            'Content-Type': 'application/json',
-            'X-Debug-Upstream-Status': String(upstream.statusCode)
-          });
-          res.end(JSON.stringify({
-            error: 'Upstream returned error',
-            status: upstream.statusCode,
-            headers: upstream.headers,
-            body: errBody
-          }));
-        });
-        return;
-      }
+    // -------------------------------------------------------------
+    // 2. High-Speed Video Stream Chunking via HTTP/2 (Zero-Buffer)
+    // -------------------------------------------------------------
+    if (parsedTarget.protocol === 'https:') {
+      let clientClosed = false;
+      const client = http2.connect(parsedTarget.origin);
 
-      // Video Stream Chunking & Range Proxy
-      const responseHeaders = {
-        'Access-Control-Allow-Origin': '*',
-        'Content-Type': upstream.headers['content-type'] || 'video/mp4',
-        'Accept-Ranges': 'bytes'
+      const closeClient = () => {
+        if (!clientClosed) {
+          clientClosed = true;
+          try { client.close(); } catch (_) {}
+        }
       };
 
-      if (upstream.headers['content-length']) {
-        responseHeaders['Content-Length'] = upstream.headers['content-length'];
-      }
-      if (upstream.headers['content-range']) {
-        responseHeaders['Content-Range'] = upstream.headers['content-range'];
+      client.on('error', (err) => {
+        console.error('H2 Client connection error:', err.message);
+        closeClient();
+        if (!res.headersSent) {
+          fallbackHttp1(targetUrl, req, res);
+        }
+      });
+
+      const h2Headers = {
+        ':method': 'GET',
+        ':path': parsedTarget.pathname + parsedTarget.search,
+        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        'referer': 'https://movieboxph.org/',
+        'accept': '*/*'
+      };
+
+      // Forward browser video range header
+      if (req.headers.range) {
+        h2Headers['range'] = req.headers.range;
       }
 
-      res.writeHead(upstream.statusCode, responseHeaders);
-      upstream.pipe(res);
-    });
+      const h2Req = client.request(h2Headers);
 
-    proxyReq.on('error', (err) => {
-      console.error('Proxy upstream error:', err);
-      if (!res.headersSent) {
-        res.status(502).send('Error streaming media from source');
-      }
-    });
+      h2Req.on('response', (headers) => {
+        const statusCode = parseInt(headers[':status'] || '200', 10);
 
-    req.on('close', () => {
-      proxyReq.destroy();
-    });
+        const responseHeaders = {
+          'Access-Control-Allow-Origin': '*',
+          'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
+          'Access-Control-Expose-Headers': 'Content-Range, Content-Length, Accept-Ranges, Content-Type',
+          'Content-Type': headers['content-type'] || 'video/mp4',
+          'Accept-Ranges': 'bytes'
+        };
+
+        if (headers['content-range']) {
+          responseHeaders['Content-Range'] = headers['content-range'];
+        }
+        if (headers['content-length']) {
+          responseHeaders['Content-Length'] = headers['content-length'];
+        }
+
+        res.writeHead(statusCode, responseHeaders);
+        h2Req.pipe(res);
+      });
+
+      h2Req.on('end', closeClient);
+      h2Req.on('error', (err) => {
+        console.error('H2 stream error:', err.message);
+        closeClient();
+        if (!res.headersSent) {
+          res.status(502).send('Error streaming media: ' + err.message);
+        }
+      });
+
+      req.on('close', () => {
+        try { h2Req.close(); } catch (_) {}
+        closeClient();
+      });
+
+      return;
+    }
+
+    // HTTP/1 Fallback
+    fallbackHttp1(targetUrl, req, res);
 
   } catch (err) {
     console.error('Stream proxy error:', err);
@@ -113,3 +144,40 @@ module.exports = async (req, res) => {
     }
   }
 };
+
+function fallbackHttp1(targetUrl, req, res) {
+  const parsed = new URL(targetUrl);
+  const client = parsed.protocol === 'https:' ? https : http;
+
+  const headers = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+    'Referer': 'https://movieboxph.org/',
+    'Accept': '*/*'
+  };
+
+  if (req.headers.range) {
+    headers['Range'] = req.headers.range;
+  }
+
+  const pReq = client.get(targetUrl, { headers }, (upstream) => {
+    const responseHeaders = {
+      'Access-Control-Allow-Origin': '*',
+      'Content-Type': upstream.headers['content-type'] || 'video/mp4',
+      'Accept-Ranges': 'bytes'
+    };
+
+    if (upstream.headers['content-length']) responseHeaders['Content-Length'] = upstream.headers['content-length'];
+    if (upstream.headers['content-range']) responseHeaders['Content-Range'] = upstream.headers['content-range'];
+
+    res.writeHead(upstream.statusCode, responseHeaders);
+    upstream.pipe(res);
+  });
+
+  pReq.on('error', (err) => {
+    if (!res.headersSent) res.status(502).send('Proxy fallback error: ' + err.message);
+  });
+
+  req.on('close', () => {
+    pReq.destroy();
+  });
+}
