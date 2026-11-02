@@ -26,7 +26,7 @@ module.exports = async (req, res) => {
 
     const headers = {
       'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 MovieBoxWindows/1.0.5',
-      'Referer': 'https://movieboxph.org/',
+      'Referer': req.query.ref ? decodeURIComponent(req.query.ref) : 'https://movieboxph.org/movies/watch',
       'Accept': '*/*'
     };
 
@@ -53,6 +53,26 @@ module.exports = async (req, res) => {
             'Cache-Control': 'public, max-age=86400'
           });
           res.end(vtt);
+        });
+        return;
+      }
+
+      // If upstream failed, return diagnostic info
+      if (upstream.statusCode !== 200 && upstream.statusCode !== 206) {
+        let errBody = '';
+        upstream.on('data', d => errBody += d);
+        upstream.on('end', () => {
+          res.writeHead(upstream.statusCode, {
+            'Access-Control-Allow-Origin': '*',
+            'Content-Type': 'application/json',
+            'X-Debug-Upstream-Status': String(upstream.statusCode)
+          });
+          res.end(JSON.stringify({
+            error: 'Upstream returned error',
+            status: upstream.statusCode,
+            headers: upstream.headers,
+            body: errBody
+          }));
         });
         return;
       }
