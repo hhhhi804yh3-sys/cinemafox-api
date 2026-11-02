@@ -1,7 +1,9 @@
 const https = require('https');
 const { BASE_URL, USER_AGENT, ensureAuthToken, isAdultOrInappropriate, cleanShowTitle, mapShelfTitle } = require('../lib/moviebox');
+const { recordRequest } = require('../lib/telemetry');
 
 module.exports = async (req, res) => {
+  const startTime = Date.now();
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
   res.setHeader('Content-Type', 'application/json; charset=utf-8');
@@ -134,6 +136,13 @@ module.exports = async (req, res) => {
     }
 
     res.setHeader('Cache-Control', 's-maxage=600, stale-while-revalidate=3600');
+
+    recordRequest({
+      type: 'الواجهة الرئيسية',
+      title: `تصفح (${shelves.length} قسم)`,
+      durationMs: Date.now() - startTime,
+      req
+    });
 
     res.status(200).json({
       success: true,

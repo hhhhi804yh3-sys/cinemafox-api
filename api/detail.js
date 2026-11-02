@@ -1,7 +1,9 @@
 const https = require('https');
 const { BASE_URL, USER_AGENT, ensureAuthToken, isAdultOrInappropriate, cleanShowTitle } = require('../lib/moviebox');
+const { recordRequest } = require('../lib/telemetry');
 
 module.exports = async (req, res) => {
+  const startTime = Date.now();
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
   res.setHeader('Content-Type', 'application/json; charset=utf-8');
@@ -56,6 +58,13 @@ module.exports = async (req, res) => {
 
     // 1. Adult Content Filter
     if (subject.isPornographic === true || isAdultOrInappropriate(subject)) {
+      recordRequest({
+        type: 'حظر محتوى غير لائق',
+        title: subject.title || title || 'عمل محجوب',
+        durationMs: Date.now() - startTime,
+        isBlocked: true,
+        req
+      });
       return res.status(403).json({
         success: false,
         blocked: true,
@@ -129,6 +138,13 @@ module.exports = async (req, res) => {
 
     // Cache detail for 1 hour on Vercel Edge
     res.setHeader('Cache-Control', 's-maxage=3600, stale-while-revalidate=86400');
+
+    recordRequest({
+      type: isSeries ? 'تفاصيل مسلسل' : 'تفاصيل فيلم',
+      title: cleanTitle || rawTitle,
+      durationMs: Date.now() - startTime,
+      req
+    });
 
     res.status(200).json({
       success: true,

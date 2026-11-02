@@ -1,7 +1,9 @@
 const https = require('https');
 const { BASE_URL, USER_AGENT, ensureAuthToken, isAdultOrInappropriate, cleanShowTitle } = require('../lib/moviebox');
+const { recordRequest } = require('../lib/telemetry');
 
 module.exports = async (req, res) => {
+  const startTime = Date.now();
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
   res.setHeader('Content-Type', 'application/json; charset=utf-8');
@@ -97,6 +99,13 @@ module.exports = async (req, res) => {
     }
 
     res.setHeader('Cache-Control', 's-maxage=180, stale-while-revalidate=600');
+
+    recordRequest({
+      type: 'بحث الكتالوج',
+      title: `بحث: ${query} (${results.length} نتيجة)`,
+      durationMs: Date.now() - startTime,
+      req
+    });
 
     res.status(200).json({
       success: true,

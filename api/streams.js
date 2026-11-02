@@ -1,5 +1,6 @@
 const https = require('https');
 const { BASE_URL, USER_AGENT, ensureAuthToken, cleanShowTitle } = require('../lib/moviebox');
+const { recordRequest } = require('../lib/telemetry');
 
 async function requestPlayStreams(subjectId, se, ep, detailPath, token) {
   const url = `${BASE_URL}/wefeed-h5api-bff/subject/play?subjectId=${encodeURIComponent(subjectId)}&se=${encodeURIComponent(se || 0)}&ep=${encodeURIComponent(ep || 0)}&detailPath=${encodeURIComponent(detailPath || '')}`;
@@ -37,6 +38,7 @@ async function requestPlayStreams(subjectId, se, ep, detailPath, token) {
 }
 
 module.exports = async (req, res) => {
+  const startTime = Date.now();
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
   res.setHeader('Content-Type', 'application/json; charset=utf-8');
@@ -101,6 +103,13 @@ module.exports = async (req, res) => {
 
     // Sort resolution descending (1080p first, then 720p, etc.)
     streams.sort((a, b) => (b.resolutions || 0) - (a.resolutions || 0));
+
+    recordRequest({
+      type: 'تشغيل وبث فيديو',
+      title: title ? `${title} (S${se}E${ep})` : `بث فيديو S${se}E${ep}`,
+      durationMs: Date.now() - startTime,
+      req
+    });
 
     res.status(200).json({
       success: true,

@@ -1,12 +1,21 @@
 {
   "version": 2,
   "rewrites": [
-    { "source": "/", "destination": "/api/index.js" },
+    { "source": "/app-ads.txt", "destination": "/api/app-ads.js" },
     { "source": "/admin", "destination": "/api/admin.js" },
     { "source": "/dashboard", "destination": "/api/admin.js" },
-    { "source": "/api/(.*)", "destination": "/api/$1.js" }
+    { "source": "/api/(.*)", "destination": "/api/$1.js" },
+    { "source": "/", "destination": "/api/index.js" }
   ],
   "headers": [
+    {
+      "source": "/app-ads.txt",
+      "headers": [
+        { "key": "Content-Type", "value": "text/plain; charset=utf-8" },
+        { "key": "Access-Control-Allow-Origin", "value": "*" },
+        { "key": "Cache-Control", "value": "public, max-age=86400" }
+      ]
+    },
     {
       "source": "/api/(.*)",
       "headers": [
