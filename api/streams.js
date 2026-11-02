@@ -2,15 +2,53 @@ const https = require('https');
 const { BASE_URL, USER_AGENT, ensureAuthToken, cleanShowTitle } = require('../lib/moviebox');
 const { recordRequest } = require('../lib/telemetry');
 
+// Fast in-memory cache for resolved detailPaths (1 hour)
+const detailPathCache = new Map();
+
+async function resolveDetailPath(subjectId, token) {
+  if (!subjectId) return '';
+  if (detailPathCache.has(subjectId)) {
+    return detailPathCache.get(subjectId);
+  }
+
+  const url = `${BASE_URL}/wefeed-h5api-bff/detail?subjectId=${encodeURIComponent(subjectId)}&se=1`;
+  return new Promise((resolve) => {
+    const req = https.get(url, {
+      headers: {
+        "User-Agent": USER_AGENT,
+        ...(token ? { "Authorization": `Bearer ${token}` } : {})
+      }
+    }, (res) => {
+      let b = "";
+      res.on("data", c => b += c);
+      res.on("end", () => {
+        try {
+          const json = JSON.parse(b);
+          const path = json.data?.subject?.detailPath || '';
+          if (path) {
+            detailPathCache.set(subjectId, path);
+          }
+          resolve(path);
+        } catch (_) {
+          resolve('');
+        }
+      });
+    });
+    req.on("error", () => resolve(''));
+    req.setTimeout(5000, () => { req.destroy(); resolve(''); });
+  });
+}
+
 async function requestPlayStreams(subjectId, se, ep, detailPath, token) {
-  const url = `${BASE_URL}/wefeed-h5api-bff/subject/play?subjectId=${encodeURIComponent(subjectId)}&se=${encodeURIComponent(se || 0)}&ep=${encodeURIComponent(ep || 0)}&detailPath=${encodeURIComponent(detailPath || '')}`;
+  const path = detailPath || `subject-${subjectId}`;
+  const url = `${BASE_URL}/wefeed-h5api-bff/subject/play?subjectId=${encodeURIComponent(subjectId)}&se=${encodeURIComponent(se || 0)}&ep=${encodeURIComponent(ep || 0)}&detailPath=${encodeURIComponent(path)}`;
 
   return new Promise((resolve) => {
     const request = https.request(url, {
       method: "GET",
       headers: {
         "User-Agent": USER_AGENT,
-        "Referer": `${BASE_URL}/movies/${encodeURIComponent(detailPath || '')}`,
+        "Referer": `${BASE_URL}/movies/${encodeURIComponent(path)}`,
         "Accept": "application/json",
         ...(token ? { "Authorization": `Bearer ${token}` } : {}),
         ...(token ? { "Cookie": `moviebox_web_tk=${token}; token=${token}` } : {})
@@ -56,9 +94,16 @@ module.exports = async (req, res) => {
   try {
     const token = await ensureAuthToken();
 
-    let streams = await requestPlayStreams(subjectId, se, ep, detailPath, token);
+    // 1. Ensure authentic detailPath is present (vital for MovieBox play endpoint)
+    let activeDetailPath = detailPath;
+    if (!activeDetailPath) {
+      activeDetailPath = await resolveDetailPath(subjectId, token);
+    }
 
-    // Smart Fallback if 0 streams returned (placeholder item)
+    // 2. Fetch precision streams for the exact season & episode
+    let streams = await requestPlayStreams(subjectId, se, ep, activeDetailPath, token);
+
+    // 3. Smart Fallback if 0 streams returned
     if ((!streams || streams.length === 0) && title) {
       const clean = cleanShowTitle(title);
       const postData = JSON.stringify({ keyword: clean, page: 1, perPage: 10, subjectType: 0 });
@@ -121,14 +166,17 @@ module.exports = async (req, res) => {
         "Referer": `${BASE_URL}/`,
         "User-Agent": USER_AGENT
       },
-      streams: streams.map(s => ({
-        id: String(s.id || ''),
-        format: s.format || 'm3u8',
-        resolution: `${s.resolutions || 1080}p`,
-        resolutionsNumber: s.resolutions || 1080,
-        url: s.url || '',
-        size: s.size || 0
-      }))
+      streams: streams.map(s => {
+        const resNum = s.resolutions || 1080;
+        return {
+          id: String(s.id || ''),
+          format: s.format || 'mp4',
+          resolution: `${resNum}p`,
+          resolutionsNumber: String(resNum),
+          url: s.url || '',
+          size: String(s.size || 0)
+        };
+      })
     });
 
   } catch (error) {
