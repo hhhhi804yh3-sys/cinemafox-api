@@ -4,13 +4,14 @@ const { BASE_URL, USER_AGENT, ensureAuthToken } = require('../lib/moviebox');
 module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Accept');
   res.setHeader('Content-Type', 'application/json; charset=utf-8');
 
   if (req.method === 'OPTIONS') {
     return res.status(200).end();
   }
 
-  const { subjectId, se = 0, ep = 0 } = req.query;
+  const { subjectId, se = 0, ep = 0, streamId = '', detailPath = '' } = req.query;
 
   if (!subjectId) {
     return res.status(400).json({ success: false, error: 'subjectId is required' });
@@ -18,38 +19,71 @@ module.exports = async (req, res) => {
 
   try {
     const token = await ensureAuthToken();
+    let resolvedStreamId = streamId;
 
-    const url = `${BASE_URL}/wefeed-h5api-bff/subject/caption?subjectId=${encodeURIComponent(subjectId)}&se=${encodeURIComponent(se)}&ep=${encodeURIComponent(ep)}`;
-
-    const captionsData = await new Promise((resolve) => {
-      const request = https.request(url, {
-        method: "GET",
-        headers: {
-          "User-Agent": USER_AGENT,
-          "Referer": `${BASE_URL}/`,
-          "Accept": "application/json",
-          ...(token ? { "Authorization": `Bearer ${token}` } : {}),
-          ...(token ? { "Cookie": `moviebox_web_tk=${token}; token=${token}` } : {})
-        }
-      }, (response) => {
-        let body = "";
-        response.on("data", chunk => body += chunk);
-        response.on("end", () => {
-          try {
-            resolve(JSON.parse(body)?.data?.captions || []);
-          } catch (_) {
-            resolve([]);
+    // 1. If streamId is missing, resolve it from subject/play API
+    if (!resolvedStreamId) {
+      const playPath = detailPath || `subject-${subjectId}`;
+      const playUrl = `${BASE_URL}/wefeed-h5api-bff/subject/play?subjectId=${encodeURIComponent(subjectId)}&se=${encodeURIComponent(se)}&ep=${encodeURIComponent(ep)}&detailPath=${encodeURIComponent(playPath)}`;
+      
+      const playData = await new Promise((resolve) => {
+        const preq = https.get(playUrl, {
+          headers: {
+            "User-Agent": USER_AGENT,
+            "Referer": `${BASE_URL}/movies/${encodeURIComponent(playPath)}`,
+            "Accept": "application/json",
+            ...(token ? { "Authorization": `Bearer ${token}` } : {})
           }
+        }, (pres) => {
+          let pb = "";
+          pres.on("data", c => pb += c);
+          pres.on("end", () => {
+            try {
+              const j = JSON.parse(pb);
+              const streams = j?.data?.streams || [];
+              if (streams.length > 0 && streams[0].id) {
+                resolve(String(streams[0].id));
+                return;
+              }
+            } catch (_) {}
+            resolve('');
+          });
         });
+        preq.on('error', () => resolve(''));
+        preq.setTimeout(6000, () => { preq.destroy(); resolve(''); });
       });
 
-      request.on("error", () => resolve([]));
-      request.setTimeout(7000, () => {
-        request.destroy();
-        resolve([]);
+      resolvedStreamId = playData;
+    }
+
+    // 2. Request Captions from MovieBox with guaranteed id
+    let captionsData = [];
+    if (resolvedStreamId) {
+      const captionUrl = `${BASE_URL}/wefeed-h5api-bff/subject/caption?subjectId=${encodeURIComponent(subjectId)}&id=${encodeURIComponent(resolvedStreamId)}`;
+      captionsData = await new Promise((resolve) => {
+        const creq = https.get(captionUrl, {
+          headers: {
+            "User-Agent": USER_AGENT,
+            "Referer": `${BASE_URL}/`,
+            "Accept": "application/json",
+            ...(token ? { "Authorization": `Bearer ${token}` } : {})
+          }
+        }, (cres) => {
+          let cb = "";
+          cres.on("data", c => cb += c);
+          cres.on("end", () => {
+            try {
+              const j = JSON.parse(cb);
+              resolve(j?.data?.captions || []);
+            } catch (_) {
+              resolve([]);
+            }
+          });
+        });
+        creq.on('error', () => resolve([]));
+        creq.setTimeout(6000, () => { creq.destroy(); resolve([]); });
       });
-      request.end();
-    });
+    }
 
     const tracks = [];
     for (const c of captionsData) {
@@ -66,8 +100,9 @@ module.exports = async (req, res) => {
       tracks.push({
         id: String(c.id || Math.random()),
         language: isArabic ? 'ar' : (isEnglish ? 'en' : lanCode),
-        label: lanName,
+        label: isArabic ? 'العربية (الافتراضية)' : (isEnglish ? 'English' : lanName),
         url: subUrl,
+        proxyVttUrl: `https://cinemafox-api.vercel.app/api/proxy?url=${encodeURIComponent(subUrl)}&vtt=true`,
         isArabic: isArabic,
         isEnglish: isEnglish
       });
@@ -87,6 +122,7 @@ module.exports = async (req, res) => {
     res.status(200).json({
       success: true,
       subjectId: subjectId,
+      streamId: resolvedStreamId,
       se: parseInt(se, 10) || 0,
       ep: parseInt(ep, 10) || 0,
       hasArabic: tracks.some(t => t.isArabic),

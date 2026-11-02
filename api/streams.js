@@ -168,12 +168,14 @@ module.exports = async (req, res) => {
       },
       streams: streams.map(s => {
         const resNum = s.resolutions || 1080;
+        const rawUrl = s.url || '';
         return {
           id: String(s.id || ''),
           format: s.format || 'mp4',
           resolution: `${resNum}p`,
           resolutionsNumber: String(resNum),
-          url: s.url || '',
+          url: rawUrl,
+          proxyUrl: rawUrl ? `https://cinemafox-api.vercel.app/api/proxy?url=${encodeURIComponent(rawUrl)}` : '',
           size: String(s.size || 0)
         };
       })

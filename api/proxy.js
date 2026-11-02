@@ -1,0 +1,95 @@
+const https = require('https');
+const http = require('http');
+
+module.exports = async (req, res) => {
+  // Full CORS Headers for cross-origin web playback
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Range, Content-Type, Accept, Origin, User-Agent');
+  res.setHeader('Access-Control-Expose-Headers', 'Content-Range, Content-Length, Accept-Ranges, Content-Type');
+
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
+  }
+
+  const targetUrl = req.query.url;
+  if (!targetUrl || !targetUrl.startsWith('http')) {
+    return res.status(400).send('Missing or invalid url parameter');
+  }
+
+  // Check if subtitle conversion to WebVTT is requested
+  const isVtt = req.query.vtt === 'true' || targetUrl.includes('.srt') || targetUrl.includes('.vtt');
+
+  try {
+    const parsedTarget = new URL(targetUrl);
+    const client = parsedTarget.protocol === 'https:' ? https : http;
+
+    const headers = {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 MovieBoxWindows/1.0.5',
+      'Referer': 'https://movieboxph.org/',
+      'Accept': '*/*'
+    };
+
+    // Forward Range header from browser video element (for seeking & chunking)
+    if (req.headers.range && !isVtt) {
+      headers['Range'] = req.headers.range;
+    }
+
+    const proxyReq = client.get(targetUrl, { headers }, (upstream) => {
+      // If subtitle conversion
+      if (isVtt && (upstream.headers['content-type']?.includes('subrip') || targetUrl.includes('.srt'))) {
+        let rawBody = '';
+        upstream.setEncoding('utf-8');
+        upstream.on('data', chunk => rawBody += chunk);
+        upstream.on('end', () => {
+          // Convert SRT to WebVTT
+          let vtt = 'WEBVTT\n\n' + rawBody
+            .replace(/\r\n/g, '\n')
+            .replace(/(\d{2}:\d{2}:\d{2}),(\d{3})/g, '$1.$2');
+
+          res.writeHead(200, {
+            'Access-Control-Allow-Origin': '*',
+            'Content-Type': 'text/vtt; charset=utf-8',
+            'Cache-Control': 'public, max-age=86400'
+          });
+          res.end(vtt);
+        });
+        return;
+      }
+
+      // Video Stream Chunking & Range Proxy
+      const responseHeaders = {
+        'Access-Control-Allow-Origin': '*',
+        'Content-Type': upstream.headers['content-type'] || 'video/mp4',
+        'Accept-Ranges': 'bytes'
+      };
+
+      if (upstream.headers['content-length']) {
+        responseHeaders['Content-Length'] = upstream.headers['content-length'];
+      }
+      if (upstream.headers['content-range']) {
+        responseHeaders['Content-Range'] = upstream.headers['content-range'];
+      }
+
+      res.writeHead(upstream.statusCode, responseHeaders);
+      upstream.pipe(res);
+    });
+
+    proxyReq.on('error', (err) => {
+      console.error('Proxy upstream error:', err);
+      if (!res.headersSent) {
+        res.status(502).send('Error streaming media from source');
+      }
+    });
+
+    req.on('close', () => {
+      proxyReq.destroy();
+    });
+
+  } catch (err) {
+    console.error('Stream proxy error:', err);
+    if (!res.headersSent) {
+      res.status(500).send(err.message || 'Stream proxy failed');
+    }
+  }
+};
