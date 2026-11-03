@@ -102,9 +102,11 @@ module.exports = async (req, res) => {
         const responseHeaders = {
           'Access-Control-Allow-Origin': '*',
           'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
-          'Access-Control-Expose-Headers': 'Content-Range, Content-Length, Accept-Ranges, Content-Type',
+          'Access-Control-Expose-Headers': 'Content-Range, Content-Length, Accept-Ranges, Content-Type, X-Upstream-H2-Status, X-Upstream-Server',
           'Content-Type': headers['content-type'] || 'video/mp4',
-          'Accept-Ranges': 'bytes'
+          'Accept-Ranges': 'bytes',
+          'X-Upstream-H2-Status': String(headers[':status'] || ''),
+          'X-Upstream-Server': String(headers['server'] || '')
         };
 
         if (headers['content-range']) {
