@@ -76,8 +76,12 @@ module.exports = async (req, res) => {
         console.error('H2 Client connection error:', err.message);
         closeClient();
         if (!res.headersSent) {
-          res.setHeader('X-H2-Error', err.message || 'unknown');
-          fallbackHttp1(targetUrl, req, res);
+          return res.status(500).json({
+            error: 'h2_client_error',
+            message: err.message,
+            code: err.code,
+            stack: err.stack
+          });
         }
       });
 
