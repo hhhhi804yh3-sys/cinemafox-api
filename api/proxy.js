@@ -104,6 +104,8 @@ module.exports = async (req, res) => {
       proxyReq.destroy();
     });
 
+    proxyReq.end();
+
   } catch (err) {
     console.error('Stream proxy error:', err);
     if (!res.headersSent) {
