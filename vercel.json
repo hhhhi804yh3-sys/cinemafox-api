@@ -1,7 +1,6 @@
 {
   "version": 2,
   "rewrites": [
-    { "source": "/app-ads.txt", "destination": "/api/app-ads.js" },
     { "source": "/admin", "destination": "/api/admin.js" },
     { "source": "/dashboard", "destination": "/api/admin.js" },
     { "source": "/api/(.*)", "destination": "/api/$1.js" },
