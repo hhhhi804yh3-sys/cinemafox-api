@@ -74,13 +74,22 @@ module.exports = async (req, res) => {
       method: req.method || 'GET',
       headers
     }, (upstream) => {
-      const responseHeaders = {
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
-        'Access-Control-Expose-Headers': 'Content-Range, Content-Length, Accept-Ranges, Content-Type',
-        'Content-Type': upstream.headers['content-type'] || 'video/mp4',
-        'Accept-Ranges': 'bytes'
-      };
+      if (upstream.statusCode !== 200 && upstream.statusCode !== 206) {
+        let errBody = '';
+        upstream.on('data', d => errBody += d);
+        upstream.on('end', () => {
+          res.writeHead(upstream.statusCode, {
+            'Access-Control-Allow-Origin': '*',
+            'Content-Type': 'application/json'
+          });
+          res.end(JSON.stringify({
+            status: upstream.statusCode,
+            headers: upstream.headers,
+            body: errBody
+          }));
+        });
+        return;
+      }
 
       if (upstream.headers['content-length']) {
         responseHeaders['Content-Length'] = upstream.headers['content-length'];
